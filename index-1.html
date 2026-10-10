@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Zaxira</title>
+<style>
+:root{--bg:#f2f5f4;--card:#fff;--ink:#16302b;--mute:#5d716c;--acc:#0b7a68;--accx:#fff;--line:#d5dfdc;--warn:#b3261e}
+@media(prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0f1a18;--card:#172623;--ink:#e6f0ed;--mute:#9bb2ac;--acc:#3fc6ae;--accx:#06231e;--line:#27403b;--warn:#ff8a80}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+main{max-width:520px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:2rem;margin:8px 0 4px;letter-spacing:-.02em}
+h2{font-size:1.05rem;margin:0 0 10px}
+p{margin:0 0 12px;color:var(--mute)}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin:14px 0}
+label{display:flex;align-items:center;gap:12px;padding:10px 0;font-size:1.05rem}
+input[type=checkbox]{width:22px;height:22px;accent-color:var(--acc)}
+button{font:inherit;font-weight:600;border:0;border-radius:12px;padding:14px 18px;background:var(--acc);color:var(--accx);width:100%;margin-top:10px;cursor:pointer}
+button.alt{background:transparent;color:var(--ink);border:1px solid var(--line)}
+button.sm{width:auto;padding:8px 12px;margin:0;font-size:.9rem}
+button:disabled{opacity:.5}
+button:focus-visible,input:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+progress{width:100%;height:10px;margin-top:10px}
+#log{white-space:pre-wrap;word-break:break-word;font-size:.9rem;color:var(--mute);margin:0;max-height:220px;overflow:auto}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);font-size:.92rem}
+.row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+[hidden]{display:none!important}
+.top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+</style>
+</head>
+<body>
+<main>
+  <h1>Zaxira</h1>
+  <p>Rasm, video va kontaktlaringizni o'z Google Drive'ingizga saqlang va istalgan telefonga qaytaring.</p>
+
+  <section id="auth">
+    <button id="login">Google bilan kirish</button>
+  </section>
+
+  <div id="app" hidden>
+    <section class="top"><span id="who"></span><button class="alt sm" id="logout">Chiqish</button></section>
+
+    <section>
+      <h2>Nimalarni nusxalaymiz yoki qaytaramiz?</h2>
+      <label><input type="checkbox" id="cP" checked> Rasmlar</label>
+      <label><input type="checkbox" id="cV" checked> Videolar</label>
+      <label><input type="checkbox" id="cC" checked> Kontaktlar</label>
+    </section>
+
+    <section>
+      <button id="backup">Zaxiralash</button>
+      <button id="pick" hidden>Rasm va videolarni tanlash</button>
+      <button id="restore" class="alt">Tiklash</button>
+      <progress id="bar" max="1" value="0" hidden></progress>
+    </section>
+
+    <section id="filesBox" hidden>
+      <h2>Bulutdagi fayllar</h2>
+      <div id="files"></div>
+      <button id="all">Hammasini yuklab olish</button>
+    </section>
+
+    <section><pre id="log">Tayyor.</pre></section>
+  </div>
+  <input type="file" id="fi" multiple hidden>
+</main>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-app.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-auth.js";
+
+const app = initializeApp({
+  apiKey: "AIzaSyDzZgSp9EwKpf3YN0JRO5e15zWnc_6ZG28",
+  authDomain: "zaxira-app.firebaseapp.com",
+  projectId: "zaxira-app",
+  storageBucket: "zaxira-app.firebasestorage.app",
+  messagingSenderId: "966168784636",
+  appId: "1:966168784636:web:827d01d5e1c52907533179"
+});
+const auth = getAuth(app);
+const provider = new GoogleAuthProvider();
+provider.addScope("https://www.googleapis.com/auth/drive.file");
+
+const $ = id => document.getElementById(id);
+const G = "https://www.googleapis.com/drive/v3/";
+const CFILE = "kontaktlar.enc.json";
+let token = null, fid = null, cloud = [];
+
+const log = t => { $("log").textContent += "\n" + t; $("log").scrollTop = 1e9; };
+const bar = v => { $("bar").hidden = v == null; if (v != null) $("bar").value = v; };
+const store = (k, v) => { try { v == null ? sessionStorage.removeItem(k) : sessionStorage.setItem(k, v); } catch (e) {} };
+const load = k => { try { return sessionStorage.getItem(k); } catch (e) { return null; } };
+
+function tokenValid() {
+  const t = load("tk"), at = +load("tt");
+  if (t && Date.now() - at < 50 * 60 * 1000) { token = t; return true; }
+  return false;
+}
+function showApp(user) {
+  $("auth").hidden = true; $("app").hidden = false;
+  $("who").textContent = user.email;
+}
+function showLogin(msg) {
+  $("app").hidden = true; $("auth").hidden = false;
+  if (msg) { const p = document.createElement("p"); p.textContent = msg; $("auth").prepend(p); }
+}
+
+$("login").onclick = async () => {
+  try {
+    const r = await signInWithPopup(auth, provider);
+    token = GoogleAuthProvider.credentialFromResult(r).accessToken;
+    store("tk", token); store("tt", Date.now());
+    fid = null; showApp(r.user);
+  } catch (e) { showLogin("Kirish bajarilmadi: " + (e.code || e.message)); }
+};
+$("logout").onclick = async () => { store("tk"); token = null; fid = null; await signOut(auth); showLogin(); };
+onAuthStateChanged(auth, u => { if (u && tokenValid()) showApp(u); else if (u) showLogin("Davom etish uchun qayta kiring."); });
+
+async function api(url, opt = {}) {
+  const r = await fetch(url, { ...opt, headers: { Authorization: "Bearer " + token, ...(opt.headers || {}) } });
+  if (r.status === 401) { store("tk"); showLogin("Seans tugadi. Qayta kiring."); throw new Error("Qayta kiring"); }
+  if (!r.ok) throw new Error((await r.text()).slice(0, 200));
+  return r;
+}
+async function folderId() {
+  if (fid) return fid;
+  const q = encodeURIComponent("name='Zaxira' and mimeType='application/vnd.google-apps.folder' and trashed=false");
+  const j = await (await api(G + "files?q=" + q + "&fields=files(id)")).json();
+  if (j.files[0]) return (fid = j.files[0].id);
+  const c = await (await api(G + "files", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "Zaxira", mimeType: "application/vnd.google-apps.folder" }) })).json();
+  return (fid = c.id);
+}
+async function list() {
+  const id = await folderId(); let out = [], pt = "";
+  do {
+    const q = encodeURIComponent(`'${id}' in parents and trashed=false`);
+    const j = await (await api(`${G}files?q=${q}&pageSize=1000&fields=nextPageToken,files(id,name,size,mimeType)${pt ? "&pageToken=" + pt : ""}`)).json();
+    out.push(...j.files); pt = j.nextPageToken;
+  } while (pt);
+  return out;
+}
+
+/* ---------- shifrlash (kontaktlar) ---------- */
+const enc = new TextEncoder(), dec = new TextDecoder();
+const b64 = u => { let s = ""; for (const b of u) s += String.fromCharCode(b); return btoa(s); };
+const ub64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+async function key(pw, salt) {
+  const m = await crypto.subtle.importKey("raw", enc.encode(pw), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations: 200000, hash: "SHA-256" }, m, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+async function seal(obj, pw) {
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await key(pw, salt), enc.encode(JSON.stringify(obj))));
+  return JSON.stringify({ v: 1, salt: b64(salt), iv: b64(iv), data: b64(ct) });
+}
+async function unseal(txt, pw) {
+  const o = JSON.parse(txt);
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: ub64(o.iv) }, await key(pw, ub64(o.salt)), ub64(o.data));
+  return JSON.parse(dec.decode(pt));
+}
+function askPw(create) {
+  const p = prompt(create ? "Kontaktlar uchun maxfiy parol o'ylab toping (kamida 6 belgi). Uni unutsangiz, kontaktlarni tiklab bo'lmaydi." : "Kontaktlar parolini kiriting:");
+  if (!p || (create && p.length < 6)) { log("Parol kiritilmadi yoki juda qisqa."); return null; }
+  return p;
+}
+
+/* ---------- zaxiralash ---------- */
+async function putContacts(text) {
+  const id = await folderId();
+  const ex = (await list()).find(f => f.name === CFILE);
+  const meta = ex ? {} : { name: CFILE, parents: [id] }, bd = "zxBND";
+  const body = `--${bd}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(meta)}\r\n--${bd}\r\nContent-Type: application/json\r\n\r\n${text}\r\n--${bd}--`;
+  await api("https://www.googleapis.com/upload/drive/v3/files" + (ex ? "/" + ex.id : "") + "?uploadType=multipart", { method: ex ? "PATCH" : "POST", headers: { "Content-Type": "multipart/related; boundary=" + bd }, body });
+}
+async function backupContacts() {
+  if (!("contacts" in navigator)) { log("Bu brauzer kontaktlarni tanlashni qo'llamaydi. Android'da Chrome ishlating."); return; }
+  const c = await navigator.contacts.select(["name", "tel", "email"], { multiple: true });
+  if (!c.length) { log("Kontakt tanlanmadi."); return; }
+  const pw = askPw(true); if (!pw) return;
+  log("Kontaktlar shifrlanmoqda...");
+  await putContacts(await seal(c, pw));
+  log("Kontaktlar saqlandi: " + c.length + " ta.");
+}
+async function upload(f, parent) {
+  const s = await api("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable", { method: "POST", headers: { "Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": f.type || "application/octet-stream", "X-Upload-Content-Length": f.size }, body: JSON.stringify({ name: f.name, parents: [parent] }) });
+  const loc = s.headers.get("Location");
+  return new Promise((res, rej) => {
+    const x = new XMLHttpRequest(); x.open("PUT", loc);
+    x.upload.onprogress = e => bar(e.loaded / e.total);
+    x.onload = () => x.status < 300 ? res() : rej(new Error("Server javobi " + x.status));
+    x.onerror = () => rej(new Error("Tarmoq xatosi"));
+    x.send(f);
+  });
+}
+async function uploadFiles(fs) {
+  if (!fs.length) return;
+  const id = await folderId();
+  const have = new Set((await list()).map(f => f.name + "|" + f.size));
+  let n = 0, sk = 0;
+  for (let i = 0; i < fs.length; i++) {
+    const f = fs[i];
+    if (have.has(f.name + "|" + f.size)) { sk++; continue; }
+    log(`(${i + 1}/${fs.length}) ${f.name}`); bar(0);
+    try { await upload(f, id); n++; } catch (e) { log("Xato: " + f.name + " — " + e.message); }
+  }
+  bar(); log(`Tayyor: ${n} ta yuklandi, ${sk} ta oldin saqlangan.`);
+}
+function openPicker() {
+  const a = []; if ($("cP").checked) a.push("image/*"); if ($("cV").checked) a.push("video/*");
+  $("fi").value = ""; $("fi").accept = a.join(","); $("fi").click();
+}
+const busy = async fn => {
+  document.querySelectorAll("button").forEach(b => b.disabled = true);
+  try { await fn(); } catch (e) { log("Xato: " + e.message); }
+  document.querySelectorAll("button").forEach(b => b.disabled = false);
+};
+$("backup").onclick = () => busy(async () => {
+  const wantF = $("cP").checked || $("cV").checked;
+  if (!wantF && !$("cC").checked) { log("Hech narsa tanlanmagan."); return; }
+  if ($("cC").checked) {
+    try { await backupContacts(); } finally { if (wantF) { $("pick").hidden = false; log("Endi \"Rasm va videolarni tanlash\" tugmasini bosing."); } }
+  } else openPicker();
+});
+$("pick").onclick = () => { $("pick").hidden = true; openPicker(); };
+$("fi").onchange = () => busy(() => uploadFiles([...$("fi").files]));
+
+/* ---------- tiklash ---------- */
+function save(blob, name) {
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
+async function dl(f) {
+  log("Yuklanmoqda: " + f.name);
+  save(await (await api(G + "files/" + f.id + "?alt=media")).blob(), f.name);
+}
+const esc = s => String(s || "").replace(/[\\;,]/g, "\\$&").replace(/\n/g, "\\n");
+function toVcf(a) {
+  return a.map(c => {
+    const n = (c.name && c.name[0]) || "";
+    const L = ["BEGIN:VCARD", "VERSION:3.0", "FN:" + esc(n), "N:" + esc(n) + ";;;;"];
+    (c.tel || []).forEach(t => L.push("TEL:" + esc(t)));
+    (c.email || []).forEach(m => L.push("EMAIL:" + esc(m)));
+    L.push("END:VCARD"); return L.join("\r\n");
+  }).join("\r\n") + "\r\n";
+}
+$("restore").onclick = () => busy(async () => {
+  log("Bulut tekshirilmoqda...");
+  cloud = await list();
+  if ($("cC").checked) {
+    const cf = cloud.find(f => f.name === CFILE);
+    if (!cf) log("Bulutda kontaktlar topilmadi.");
+    else {
+      const pw = askPw(false);
+      if (pw) {
+        try {
+          const arr = await unseal(await (await api(G + "files/" + cf.id + "?alt=media")).text(), pw);
+          save(new Blob([toVcf(arr)], { type: "text/vcard" }), "kontaktlar.vcf");
+          log(`Kontaktlar: ${arr.length} ta. Yuklangan "kontaktlar.vcf" faylini oching va kontaktlarga qo'shing.`);
+        } catch (e) { log("Parol noto'g'ri yoki fayl buzilgan."); }
+      }
+    }
+  }
+  const media = cloud.filter(f => ($("cP").checked && f.mimeType.startsWith("image/")) || ($("cV").checked && f.mimeType.startsWith("video/")));
+  $("files").textContent = "";
+  media.forEach(f => {
+    const r = document.createElement("div"); r.className = "row";
+    const s = document.createElement("span"); s.textContent = f.name;
+    const b = document.createElement("button"); b.className = "alt sm"; b.textContent = "Yuklab olish";
+    b.onclick = () => busy(() => dl(f));
+    r.append(s, b); $("files").append(r);
+  });
+  $("filesBox").hidden = !media.length;
+  $("all").onclick = () => busy(async () => { for (const f of media) { await dl(f); await new Promise(r => setTimeout(r, 900)); } log("Hammasi yuklab olindi."); });
+  log(`Bulutda ${media.length} ta rasm/video bor.`);
+});
+</script>
+</body>
+</html>
